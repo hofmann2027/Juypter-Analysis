@@ -1,0 +1,13 @@
+python-dateutil
+pandas
+numpy
+matplotlib
+seaborn
+scikit-learn
+yfinance
+ipywidgets
+statsmodels
+arch
+voila
+xlsxwriter
+openpyxl
