@@ -1,0 +1,305 @@
+
+import datetime as dt
+import yfinance as yf
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.linear_model import LinearRegression
+import ipywidgets as widgets
+from IPython.display import display, clear_output
+from statsmodels.tsa.arima.model import ARIMA
+from arch import arch_model
+
+
+# Setting Stat Date (Voila Widget)
+start_date = widgets.DatePicker(
+    description='Start Date',
+    disabled=False,
+    value=pd.to_datetime("2020-01-01")
+)
+
+
+
+# --- Step 2: Data Download Function ---
+def download_data(tickers, start="2020-01-01"):
+    end = dt.datetime.today().strftime('%Y-%m-%d')
+    df = yf.download(tickers, start=start, end=end)
+
+    if isinstance(df.columns, pd.MultiIndex):
+        if "Adj Close" in df.columns.get_level_values(0):
+            df = df["Adj Close"]
+        else:
+            df = df["Close"]
+
+    elif "Adj Close" in df.columns:
+        df = df[["Adj Close"]]
+        df.columns = [tickers[0]]
+    elif "Close" in df.columns:
+        df = df[["Close"]]
+        df.columns = [tickers[0]]
+    elif isinstance(df, pd.Series):
+        df = df.to_frame(name=tickers[0])
+
+    return df
+
+# --- Step 3: Metrics ---
+def calculate_metrics(df):
+    daily_returns = df.pct_change().dropna()
+    cumulative_returns = (1 + daily_returns).cumprod()
+    rolling_volatility = daily_returns.rolling(window=30).std()
+    return daily_returns, cumulative_returns, rolling_volatility
+
+def sharpe_ratio(daily_returns, risk_free_rate=0.02):
+    mean_return = daily_returns.mean() * 252
+    std_return = daily_returns.std() * np.sqrt(252)
+    return (mean_return - risk_free_rate) / std_return
+
+def sortino_ratio(daily_returns, risk_free_rate=0.02):
+    downside_returns = daily_returns[daily_returns < 0]
+    mean_return = daily_returns.mean() * 252
+    downside_std = downside_returns.std() * np.sqrt(252)
+    return (mean_return - risk_free_rate) / downside_std
+
+def max_drawdown(cumulative_returns):
+    roll_max = cumulative_returns.cummax()
+    drawdown = cumulative_returns / roll_max - 1
+    return drawdown.min()
+
+def calmar_ratio(cumulative_returns):
+    total_return = cumulative_returns.iloc[-1] / cumulative_returns.iloc[0] - 1
+    cagr = (1 + total_return) ** (252 / len(cumulative_returns)) - 1
+    mdd = abs(max_drawdown(cumulative_returns))
+    return cagr / mdd if mdd != 0 else np.nan
+
+# --- Step 4: Technical Indicators ---
+def technical_indicators(df):
+    techs = pd.DataFrame(index=df.index)
+    for ticker in df.columns:
+        prices = df[ticker]
+        techs[f'{ticker}_MA20'] = prices.rolling(20).mean()
+        techs[f'{ticker}_MA50'] = prices.rolling(50).mean()
+        techs[f'{ticker}_MA200'] = prices.rolling(200).mean()
+        delta = prices.diff()
+        gain = np.where(delta > 0, delta, 0)
+        loss = np.where(delta < 0, -delta, 0)
+        avg_gain = pd.Series(gain, index=prices.index).rolling(14).mean()
+        avg_loss = pd.Series(loss, index=prices.index).rolling(14).mean()
+        rs = avg_gain / avg_loss
+        techs[f'{ticker}_RSI'] = 100 - (100 / (1 + rs))
+        exp1 = prices.ewm(span=12, adjust=False).mean()
+        exp2 = prices.ewm(span=26, adjust=False).mean()
+        techs[f'{ticker}_MACD'] = exp1 - exp2
+        techs[f'{ticker}_Signal'] = techs[f'{ticker}_MACD'].ewm(span=9, adjust=False).mean()
+        low14 = prices.rolling(window=14).min()
+        high14 = prices.rolling(window=14).max()
+        techs[f'{ticker}_%K'] = 100 * ((prices - low14) / (high14 - low14))
+        techs[f'{ticker}_%D'] = techs[f'{ticker}_%K'].rolling(window=3).mean()
+    return techs
+
+# --- Step 5: Portfolio Analysis ---
+def portfolio_analysis(daily_returns):
+    corr = daily_returns.corr()
+    plt.figure(figsize=(8,6))
+    sns.heatmap(corr, annot=True, cmap="coolwarm", center=0)
+    plt.title("Correlation Matrix")
+    plt.show()
+    return corr
+
+# --- Step 6: Market Comparison ---
+def market_metrics(stock_returns, market_returns, risk_free_rate=0.02):
+    X = market_returns.values.reshape(-1, 1)
+    y = stock_returns.values
+    model = LinearRegression().fit(X, y)
+    beta = model.coef_[0]
+    alpha = model.intercept_
+    r2 = model.score(X, y)
+    treynor = (stock_returns.mean() * 252 - risk_free_rate) / beta if beta != 0 else np.nan
+    return beta, alpha, r2, treynor
+
+# --- Step 7: Monte Carlo ---
+def monte_carlo_simulation(prices, ticker, num_simulations=1000, forecast_days=252):
+    last_price = prices.iloc[-1]
+    returns = prices.pct_change().dropna()
+    mu = returns.mean()
+    sigma = returns.std()
+
+    simulations = []
+    for _ in range(num_simulations):
+        price_series = [last_price]
+        for _ in range(forecast_days):
+            price_series.append(price_series[-1] * (1 + np.random.normal(mu, sigma)))
+        simulations.append(price_series)
+
+    plt.figure(figsize=(10,6))
+    for sim in simulations[:50]:
+        plt.plot(sim, color="blue", alpha=0.2)
+    plt.title(f"Monte Carlo Simulation (50 Paths) - {ticker}")
+    plt.xlabel("Days")
+    plt.ylabel("Price")
+    plt.show()
+
+# --- Step 8: Master Function ---
+def analyze_stocks(tickers, start):
+    df = download_data(tickers, start)
+    benchmark = download_data(["SPY"], start)
+
+    daily, cumulative, volatility = calculate_metrics(df)
+    daily_bench, cum_bench, _ = calculate_metrics(benchmark)
+
+    df.plot(figsize=(12,6), title="Adjusted Close Prices")
+    plt.show()
+    cumulative.plot(figsize=(12,6), title="Cumulative Returns (Growth of $1)")
+    cum_bench.plot(ax=plt.gca(), linestyle="--")
+    plt.legend(list(cumulative.columns) + ["SPY"])
+    plt.show()
+
+    sharpe_vals = sharpe_ratio(daily)
+    sortino_vals = sortino_ratio(daily)
+    calmar_vals = {col: calmar_ratio(cumulative[col]) for col in cumulative.columns}
+    ratios = pd.DataFrame({"Sharpe": sharpe_vals, "Sortino": sortino_vals, "Calmar": calmar_vals})
+    print("\n--- Risk-Adjusted Ratios ---")
+    print(ratios)
+
+    print("\n--- Market Comparison (vs SPY) ---")
+    for col in daily.columns:
+        aligned = daily[col].dropna().align(daily_bench["SPY"].dropna(), join="inner")
+        stock_aligned, market_aligned = aligned
+        beta, alpha, r2, treynor = market_metrics(stock_aligned, market_aligned, 0.02)
+        print(f"{col}: Beta={beta:.3f}, Alpha={alpha:.5f}, R²={r2:.3f}, Treynor={treynor:.3f}")
+
+    techs = technical_indicators(df)
+    print("\n--- Sample Technical Indicators ---")
+    print(techs.tail())
+
+    corr = portfolio_analysis(daily)
+
+    for col in df.columns:
+        monte_carlo_simulation(df[col], ticker=col)
+        
+        print(f"\n--- ARIMA Forecast for {col} ---")
+        arima_forecast(df[col], forecast_days=30, ticker=col)
+
+        print(f"\n--- GARCH Volatility Forecast for {col} ---")
+        garch_forecast(df[col], forecast_days=30, ticker=col)
+
+    return df, daily, cumulative, ratios, techs, corr
+
+# --- Step 9: Voilà Widgets ---
+ticker_input = widgets.Text(
+    value="",
+    description="Tickers:",
+    placeholder="Enter tickers separated by commas",
+    layout=widgets.Layout(width='60%')
+)
+
+
+def arima_forecast(series, forecast_days=30, ticker=""):
+    # Ensure datetime index with freq
+    series = series.dropna()
+    series.index = pd.to_datetime(series.index)
+    series = series.asfreq(pd.infer_freq(series.index))
+
+    # Use log returns
+    returns = np.log(series / series.shift(1)).dropna()
+
+    # Fit ARIMA (you can tune p,d,q — this is a simple ARIMA(1,0,1))
+    model = ARIMA(returns, order=(1,0,1))
+    model_fit = model.fit()
+
+    # Forecast future returns
+    forecast_returns = model_fit.forecast(steps=forecast_days)
+
+    # Rebuild price path from last known price
+    last_price = series.iloc[-1]
+    forecast_prices = last_price * np.exp(np.cumsum(forecast_returns))
+
+    # Plot
+    plt.figure(figsize=(10,5))
+    plt.plot(series.index, series, label="Historical")
+    future_dates = pd.date_range(series.index[-1], periods=forecast_days+1, freq=series.index.freq)[1:]
+    plt.plot(future_dates, forecast_prices, label="ARIMA Forecast", linestyle="--")
+    plt.title(f"ARIMA Forecast for {ticker}")
+    plt.legend()
+    plt.show()
+
+    return forecast_prices
+
+def garch_forecast(series, forecast_days=30, ticker=""):
+    # Ensure proper index and drop NaNs
+    series = series.dropna()
+    series.index = pd.to_datetime(series.index)
+    if pd.infer_freq(series.index) is None:
+        series = series.asfreq("B")  # force business daily frequency
+
+    # Use log returns (scaled)
+    returns = np.log(series / series.shift(1)).dropna() * 100  
+
+    # Fit GARCH(1,1)
+    model = arch_model(returns, mean="Zero", vol="Garch", p=1, q=1)
+    model_fit = model.fit(disp="off")
+
+    # Forecast volatility
+    forecast = model_fit.forecast(horizon=forecast_days, reindex=False)
+    volatility = np.sqrt(forecast.variance.values[-1, :])
+
+    # ✅ Generate future dates explicitly
+    last_date = returns.index[-1]
+    future_dates = pd.bdate_range(last_date, periods=forecast_days+1, freq="B")[1:]
+
+    # Plot
+    plt.figure(figsize=(10, 5))
+    plt.plot(returns.index, returns, color="blue", alpha=0.4, label="Returns")
+    plt.plot(future_dates, volatility, color="red", label="Forecast Volatility")
+    plt.title(f"GARCH Volatility Forecast for {ticker}")
+    plt.xlabel("Date")
+    plt.ylabel("Volatility (%)")
+    plt.legend()
+    plt.show()
+
+    return volatility
+
+run_button = widgets.Button(description="Run Analysis", button_style="success")
+
+output = widgets.Output(layout={'border': '1px solid lightgray'})
+
+def on_run_clicked(b):
+    with output:
+        clear_output(wait=True)   # clear previous outputs
+        # Read tickers from text box
+        tickers = [t.strip().upper() for t in ticker_input.value.split(",") if t.strip()]
+        if len(tickers) == 0:
+            print("⚠️ Please enter at least one ticker (e.g. NVDA).")
+            return
+
+        # Read start date (ensure it's set)
+        if start_date.value is None:
+            print("⚠️ Please pick a start date.")
+            return
+        s_date = start_date.value.strftime("%Y-%m-%d")
+
+        print(f"Running analysis for {tickers} from {s_date} until today...\n")
+
+        # Call your main analysis function (it returns several objects)
+        try:
+            data, daily, cumulative, ratios, techs, corr = analyze_stocks(tickers, start=s_date)
+            # Optionally show brief summary
+            print("\n--- Done. Summary ---")
+            print("Prices shape:", getattr(data, "shape", None))
+            print("Daily returns shape:", getattr(daily, "shape", None))
+            print("\nYou can scroll up to see plots and detailed outputs.")
+        except Exception as e:
+            # Print a helpful error if something fails
+            import traceback
+            print("❌ Analysis failed with error:")
+            traceback.print_exc()
+
+run_button.on_click(on_run_clicked)
+
+widget_box = widgets.VBox([
+    widgets.HBox([ticker_input, start_date, run_button]),
+    output
+])
+
+
+display(widget_box)
