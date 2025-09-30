@@ -10,7 +10,7 @@ This repository contains a Jupyter Notebook and helper scripts to download stock
 ## Quick setup (macOS / Linux)
 ```bash
 # clone
-git clone https://github.com/YOUR_USERNAME/stock-analysis-dashboard.git
+git clone https://github.com/hofmann2027/stock-analysis-dashboard.git
 cd stock-analysis-dashboard
 
 # create venv & activate
