@@ -189,10 +189,10 @@ def analyze_stocks(tickers, start):
 ticker_input = widgets.Text(
     value="",
     description="Tickers:",
-    placeholder="Enter tickers separated by commas",
-    layout=widgets.Layout(width='60%')
+    #placeholder="Enter tickers separated by commas",
+    #layout=widgets.Layout(width='60%')
 )
-
+display(ticker_input)
 
 def arima_forecast(series, forecast_days=30, ticker=""):
     # Ensure datetime index with freq
@@ -301,5 +301,139 @@ widget_box = widgets.VBox([
     output
 ])
 
+## Start of new code
+
+tab1 = widgets.Output()
+with tab1:
+    display(widget_box)
+
+# --- Single Stock Tab ---
+ticker_single = widgets.Text(value="AAPL", description="Ticker:")
+indicators_single = widgets.SelectMultiple(
+    options=['SMA20', 'SMA50', 'EMA20', 'RSI14', 'MACD'],
+    description="Indicators:"
+)
+update_button_single = widgets.Button(description="Run Single Stock")
+
+output_chart_single = widgets.Output()
+output_fundamentals_single = widgets.Output()
+output_financials_single = widgets.Output()
+
+def get_indicators(df, selected):
+    if 'SMA20' in selected:
+        df['SMA20'] = df['Close'].rolling(20).mean()
+    if 'SMA50' in selected:
+        df['SMA50'] = df['Close'].rolling(50).mean()
+    if 'EMA20' in selected:
+        df['EMA20'] = df['Close'].ewm(span=20).mean()
+    if 'RSI14' in selected:
+        delta = df['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+        rs = gain / loss
+        df['RSI14'] = 100 - (100 / (1 + rs))
+    if 'MACD' in selected:
+        df['EMA12'] = df['Close'].ewm(span=12).mean()
+        df['EMA26'] = df['Close'].ewm(span=26).mean()
+        df['MACD'] = df['EMA12'] - df['EMA26']
+    return df
+
+def update_single_stock(b):
+    output_chart_single.clear_output()
+    output_fundamentals_single.clear_output()
+    output_financials_single.clear_output()
+    
+    ticker = ticker_single.value
+    stock = yf.Ticker(ticker)
+    hist = stock.history(period="1y")
+    hist = get_indicators(hist, indicators_single.value)
+
+    # --- Chart ---
+    with output_chart_single:
+        fig, ax = plt.subplots(figsize=(12,6))
+        ax.plot(hist.index, hist['Close'], label="Close")
+        for ind in ['SMA20','SMA50','EMA20']:
+            if ind in hist.columns:
+                ax.plot(hist.index, hist[ind], label=ind)
+        ax.legend()
+        plt.title(f"{ticker} Price + Indicators")
+        plt.show()
+
+        if 'RSI14' in hist.columns:
+            plt.figure(figsize=(12,3))
+            plt.plot(hist.index, hist['RSI14'], label="RSI14")
+            plt.axhline(70, color='red', linestyle='--')
+            plt.axhline(30, color='green', linestyle='--')
+            plt.legend()
+            plt.show()
+        if 'MACD' in hist.columns:
+            plt.figure(figsize=(12,3))
+            plt.plot(hist.index, hist['MACD'], label="MACD")
+            plt.axhline(0, color='black', linestyle='--')
+            plt.legend()
+            plt.show()
+
+    # --- Fundamentals ---
+    with output_fundamentals_single:
+        info = stock.info
+        fundamentals = {
+            "Market Cap": info.get("marketCap"),
+            "Trailing P/E": info.get("trailingPE"),
+            "Forward P/E": info.get("forwardPE"),
+            "PEG Ratio": info.get("pegRatio"),
+            "Dividend Yield": info.get("dividendYield"),
+            "52 Week High": info.get("fiftyTwoWeekHigh"),
+            "52 Week Low": info.get("fiftyTwoWeekLow")
+        }
+        fundamentals_df = pd.DataFrame(list(fundamentals.items()), columns=["Metric","Value"])
+        display(fundamentals_df)
+
+    # --- Financials ---
+    with output_financials_single:
+        try:
+            display(widgets.HTML("<h3>Balance Sheet</h3>"))
+            display(stock.balance_sheet)
+
+            display(widgets.HTML("<h3>Income Statement</h3>"))
+            display(stock.financials)
+
+            display(widgets.HTML("<h3>Cash Flow</h3>"))
+            display(stock.cashflow)
+        except Exception as e:
+            print("❌ Could not fetch financials:", e)
+
+update_button_single.on_click(update_single_stock)
+
+tab2 = widgets.Output()
+with tab2:
+    display(widgets.VBox([
+        ticker_single,
+        indicators_single,
+        update_button_single,
+        output_chart_single,
+        output_fundamentals_single,
+        output_financials_single
+    ]))
+
+tabs = widgets.Tab()
+tabs.children = [tab1, tab2]
+tabs.set_title(0, "Compare Stocks")
+tabs.set_title(1, "Single Stock")
+
+display(tabs)
+
+def rounding_format(x):
+    if pd.isna(x):
+        return ""
+    if abs(x) >= 1e9 or (0 < abs(x) <= 1e-3):
+        return f"{x:.2e}"
+    elif abs(x) >= 1e6:
+        return f"{x:,.0f}"
+    else:
+        return f"{x:,.2f}"
+    
+pd.options.display.float_format = lambda x: rounding_format(x)
+
+#end of new code
 
 display(widget_box)
